@@ -23,7 +23,7 @@ COPY package*.json ./
 RUN npm install --only=production
 COPY dist/ .
 
-EXPOSE 8080
+EXPOSE 3000
 
-CMD [ "node", "index.js" ]
+CMD [ "node", "app.js" ]
 
