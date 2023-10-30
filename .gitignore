@@ -8,7 +8,7 @@
 /.sonarlint
 # dependencies
 /node_modules
-/certificates
+/certificates/*
 
 
 # IDE - VSCode
