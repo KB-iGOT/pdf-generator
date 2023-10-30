@@ -1,6 +1,7 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid'
-import { logError } from './utils/logger'
+import { logError, logInfo } from './utils/logger'
+import * as fs from 'fs'
 const app = express();
 const port = 3000;
 app.use(express.json({limit: '50mb'}));
@@ -33,6 +34,9 @@ app.post('/public/v8/course/batch/cert/download/mobile', async (req, res) => {
       res.set({ 'Content-Type': 'application/pdf', 'Content-Length': buffer.length })
       res.send(buffer)
       browser.close()
+      fs.unlink(`certificates/certificate-${uuid}.pdf`, function(){
+        logInfo('Deleted file : ', `certificates/certificate-${uuid}.pdf`)
+      });
     } else {
       res.status(400).json({
         error: 'Unsupported output format',
