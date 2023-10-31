@@ -21,18 +21,6 @@ node('build-slave') {
                 build_tag = sh(script: "echo " + params.github_release_tag.split('/')[-1] + "_" + commit_hash + "_" + env.BUILD_NUMBER, returnStdout: true).trim()
                 echo "build_tag: " + build_tag
 		
-		          stage('docker-pre-build') {
-              sh '''
-              pwd
-              docker build -f ./Dockerfile.build -t $docker_pre_build .
-              docker run --name=$docker_pre_build $docker_pre_build && docker cp $docker_pre_build:/usr/src/app/dist.zip .
-              sleep 30
-              docker rm -f $docker_pre_build
-              docker rmi -f $docker_pre_build
-              unzip -o dist.zip
-                '''
-              }
-
 
             stage('Build') {
                 env.NODE_ENV = "build"
