@@ -5,18 +5,17 @@ import * as fs from 'fs'
 const app = express();
 const port = 3000;
 app.use(express.json({limit: '50mb'}));
-app.use(express.urlencoded({limit: '50mb'}));
+app.use(express.urlencoded({limit: '50mb'}))
 
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer')
 
 app.get('/', (req, res) => {
-  res.send('Hello World!');
+  res.send('Hello World!')
 });
 
 app.listen(port, () => {
   return console.log(`Express is listening at http://localhost:${port}`);
 });
-
 
 app.post('/public/v8/course/batch/cert/download/mobile', async (req, res) => {
   try {
@@ -37,13 +36,22 @@ app.post('/public/v8/course/batch/cert/download/mobile', async (req, res) => {
       fs.unlink(`certificates/certificate-${uuid}.pdf`, function(){
         logInfo('Deleted file : ', `certificates/certificate-${uuid}.pdf`)
       });
-    } else {
-      res.status(400).json({
-        error: 'Unsupported output format',
-        msg: 'Output format should be svg or pdf',
-      })
+    }  else if (req.body.outputFormat === 'png') {
+      // Puppeteer implementation
+      const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] })
+      const page = await browser.newPage()
+      await page.goto(svgContent, { waitUntil: 'networkidle2' })
+      const uuid = uuidv4()
+      const buffer = await page.screenshot({ path: `certificates/certificate-${uuid}.png`, printBackground: true, width: '2048px', height: '1170px' })
+      res.set({ 'Content-Type': 'image/png', 'Content-Length': buffer.length })
+      res.send(buffer)
+      browser.close()
+      // fs.unlink(`certificates/certificate-${uuid}.png`, function(){
+      //   logInfo('Deleted file : ', `certificates/certificate-${uuid}.png`)
+      // });
     }
-  } catch (err) {
+  }
+  catch (err) {
     logError(err)
 
     res.status((err && err.response && err.response.status) || 500).send(
@@ -53,3 +61,5 @@ app.post('/public/v8/course/batch/cert/download/mobile', async (req, res) => {
     )
   }
 })
+
+app.listen(3002);
