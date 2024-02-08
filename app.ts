@@ -67,7 +67,7 @@ app.post('/public/v8/course/batch/cert/download/mobile', async (req, res) => {
   }
 })
 
-app.get('/cert/download/:certId', async(req, res) => {
+app.get('/public/v8/cert/download/:certId', async(req, res) => {
   try {
     console.log('inside method')
     const certId = req.params.certId
