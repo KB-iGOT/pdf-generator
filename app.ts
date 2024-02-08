@@ -2,6 +2,8 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid'
 import { logError, logInfo } from './utils/logger'
 import * as fs from 'fs'
+import axios from 'axios'
+import { axiosRequestConfig } from './configs/request.config'
 const app = express();
 const port = 3000;
 app.use(express.json({limit: '50mb'}));
@@ -9,12 +11,15 @@ app.use(express.urlencoded({limit: '50mb'}))
 
 const puppeteer = require('puppeteer')
 
+const unknownError = 'Failed due to unknown reason'
+
+const API_END_POINTS = {
+  // downloadCert: (certId: string) => `${CONSTANTS.HTTPS_HOST}/api/certreg/v2/certs/download/${certId}`,
+  downloadCert: (certId: string) => `http://cert-registry-service:9000/certs/v2/registry/download/${certId}`
+}
+
 app.get('/', (req, res) => {
   res.send('Hello World!')
-});
-
-app.listen(port, () => {
-  return console.log(`Express is listening at http://localhost:${port}`);
 });
 
 app.post('/public/v8/course/batch/cert/download/mobile', async (req, res) => {
@@ -62,4 +67,27 @@ app.post('/public/v8/course/batch/cert/download/mobile', async (req, res) => {
   }
 })
 
-app.listen(3002);
+app.get('/cert/download/:certId', async(req, res) => {
+  try {
+    console.log('inside method')
+    const certId = req.params.certId
+    const response = await axios.get(API_END_POINTS.downloadCert(certId),
+    {...axiosRequestConfig})
+    console.log('response : ', response)
+    res.status(response.status).send(response.data)
+  } catch (err) {
+    logError(err)
+
+    res.status((err && err.response && err.response.status) || 500).send(
+      (err && err.response && err.response.data) || {
+        error: unknownError,
+      }
+    )
+  }
+})
+
+app.listen(port, () => {
+  return console.log(`Express is listening at http://localhost:${port}`);
+});
+
+// app.listen(3002);
