@@ -51,9 +51,9 @@ app.post('/public/v8/course/batch/cert/download/mobile', async (req, res) => {
       res.set({ 'Content-Type': 'image/png', 'Content-Length': buffer.length })
       res.send(buffer)
       browser.close()
-      // fs.unlink(`certificates/certificate-${uuid}.png`, function(){
-      //   logInfo('Deleted file : ', `certificates/certificate-${uuid}.png`)
-      // });
+      fs.unlink(`certificates/certificate-${uuid}.png`, function(){
+        logInfo('Deleted file : ', `certificates/certificate-${uuid}.png`)
+      });
     }
   }
   catch (err) {
@@ -73,8 +73,23 @@ app.get('/public/v8/cert/download/:certId', async(req, res) => {
     const certId = req.params.certId
     const response = await axios.get(API_END_POINTS.downloadCert(certId),
     {...axiosRequestConfig})
-    console.log('response : ', response)
-    res.status(response.status).send(response.data)
+    if(response && response.data && response.data.result && response.data.result.printUri) {
+      const svgContent = response.data.result.printUri
+      const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] })
+      const page = await browser.newPage()
+      await page.goto(svgContent, { waitUntil: 'networkidle2' })
+      const uuid = uuidv4()
+      const buffer = await page.screenshot({ path: `certificates/certificate-${uuid}.png`, printBackground: true, width: '1204px', height: '662px' })
+      res.set({ 'Content-Type': 'image/png', 'Content-Length': buffer.length })
+      res.send(buffer)
+      browser.close()
+      fs.unlink(`certificates/certificate-${uuid}.png`, function(){
+        logInfo('Deleted file : ', `certificates/certificate-${uuid}.png`)
+      });
+      
+    } else {
+      res.status(400).send('No data from the server')
+    }
   } catch (err) {
     logError(err)
 
