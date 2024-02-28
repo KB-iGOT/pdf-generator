@@ -69,18 +69,15 @@ app.post('/public/v8/course/batch/cert/download/mobile', async (req, res) => {
 
 app.get('/public/v8/cert/download/:certId', async(req, res) => {
   try {
-    console.log('inside method')
     const certId = req.params.certId
+    console.log('inside method - certId: ', certId)
     const response = await axios.get(API_END_POINTS.downloadCert(certId),
     {...axiosRequestConfig})
     if(response && response.data && response.data.result && response.data.result.printUri) {
       const svgContent = response.data.result.printUri
       const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] })
       const page = await browser.newPage()
-      page.setViewport({
-        width: 1368,
-        height: 768
-      })
+      page.setViewport()
       await page.goto(svgContent, { waitUntil: 'networkidle2' })
       const uuid = uuidv4()
       const buffer = await page.screenshot({ path: `certificates/certificate-${uuid}.png`, printBackground: true})
