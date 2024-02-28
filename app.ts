@@ -78,12 +78,15 @@ app.get('/public/v8/cert/download/:certId', async(req, res) => {
       const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] })
       const page = await browser.newPage()
       page.setViewport({
-        width: 1380,
+        width: 1368,
         height: 768
       })
-      await page.goto(svgContent, { waitUntil: 'networkidle2' })
+      await page.goto('about:blank', { waitUntil: 'networkidle2' });
+      await page.setContent(`<div id="container" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0;);">${svgContent}</div>`)
+      // await page.goto(svgContent, { waitUntil: 'networkidle2' })
+      const element = await page.$('#container');
       const uuid = uuidv4()
-      const buffer = await page.screenshot({ path: `certificates/certificate-${uuid}.png`, printBackground: true})
+      const buffer = await element.screenshot({ path: `certificates/certificate-${uuid}.png`, printBackground: true, quality: 100},)
       res.set({ 'Content-Type': 'image/png', 'Content-Length': buffer.length })
       res.send(buffer)
       browser.close()
