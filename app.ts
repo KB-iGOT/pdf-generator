@@ -82,8 +82,12 @@ app.get('/public/v8/cert/download/:certId', async(req, res) => {
         height: 1080
       })
       await page.goto(svgContent, { waitUntil: 'networkidle2' })
+      const selector = 'svg';
+      await page.waitForSelector(selector);
+      const element = await page.$(selector); 
+
       const uuid = uuidv4()
-      const buffer = await page.screenshot({ path: `certificates/certificate-${uuid}.png`, printBackground: false})
+      const buffer = await element.screenshot({ path: `certificates/certificate-${uuid}.png`, printBackground: false})
       res.set({ 'Content-Type': 'image/png', 'Content-Length': buffer.length })
       res.send(buffer)
       browser.close()
