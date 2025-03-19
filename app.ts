@@ -22,6 +22,10 @@ app.get('/', (req, res) => {
   res.send('Hello World!')
 });
 
+app.get('/liveness', (req, res) => {
+  res.status(200).send('ok');
+});
+
 app.post('/public/v8/course/batch/cert/download/mobile', async (req, res) => {
   try {
     const svgContent = req.body.printUri
