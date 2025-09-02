@@ -2,6 +2,11 @@ FROM node:16
 
 WORKDIR /usr/src/app
 
+# Switch old repos to archive repos
+RUN sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list \
+ && sed -i '/security.debian.org/d' /etc/apt/sources.list \
+ && echo "deb http://archive.debian.org/debian/ buster main contrib non-free" > /etc/apt/sources.list
+
 RUN apt-get -o Acquire::Check-Valid-Until=false update
 
 RUN apt install -y libnotify-dev libgconf-2-4 libnss3 libxss1 libasound2 --allow-unauthenticated
