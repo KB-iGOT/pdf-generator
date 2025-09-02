@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y fonts-ipafont-gothic fonts-wqy-zenhei f
 RUN apt-get install -y fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 --no-install-recommends --allow-unauthenticated --allow-unauthenticated
 RUN apt-get install -y libdrm2 libgbm1 libnss3 --allow-unauthenticated
 RUN apt-get install -y fonts-noto-cjk fonts-noto-ui-core fonts-noto-color-emoji
+RUN apt-get install -y fonts-kannada fonts-lohit-knda fonts-navilu
 
 RUN mkdir -p /usr/src/app/user_upload
 RUN mkdir -p /usr/src/app/logs
