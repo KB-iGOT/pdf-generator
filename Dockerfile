@@ -15,7 +15,7 @@ RUN apt-get install -y wget gnupg && wget -q -O - https://dl-ssl.google.com/linu
 RUN apt-get update && apt-get install -y fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 --no-install-recommends --allow-unauthenticated
 RUN apt-get install -y fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 --no-install-recommends --allow-unauthenticated --allow-unauthenticated
 RUN apt-get install -y libdrm2 libgbm1 libnss3 --allow-unauthenticated
-sudo apt install -y fonts-noto-cjk fonts-noto-ui-core fonts-noto-color-emoji
+RUN apt-get install -y fonts-noto-cjk fonts-noto-ui-core fonts-noto-color-emoji
 
 RUN mkdir -p /usr/src/app/user_upload
 RUN mkdir -p /usr/src/app/logs
