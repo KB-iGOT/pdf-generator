@@ -19,6 +19,9 @@ RUN apt-get install -y fonts-noto-cjk fonts-noto-ui-core fonts-noto-color-emoji
 RUN apt-get install -y fonts-lohit-knda fonts-navilu
 RUN apt-get update && apt-get install -y fonts-noto-core fontconfig wget && mkdir -p /usr/share/fonts/truetype/kannada && cd /tmp && wget -O kannada.ttf "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansKannada/NotoSansKannada-Regular.ttf" && cp kannada.ttf /usr/share/fonts/truetype/kannada/ && fc-cache -fv && apt-get remove -y wget && rm -rf /var/lib/apt/lists/* /tmp/*
 
+# Verify fonts are installed
+RUN fc-list | grep -i kannada
+
 RUN mkdir -p /usr/src/app/user_upload
 RUN mkdir -p /usr/src/app/logs
 
