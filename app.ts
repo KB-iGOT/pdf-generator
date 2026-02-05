@@ -137,7 +137,6 @@ app.get('/public/v8/milestone/cert/download/:certId', async (req, res) => {
       return res.status(400).send('printUri not received from backend')
     }
 
-    // ⭐ EXACT SAME LOGIC AS COURSE CERTS ⭐
     const browser = await puppeteer.launch({
       headless: true,
       args: ['--no-sandbox']
@@ -146,7 +145,6 @@ app.get('/public/v8/milestone/cert/download/:certId', async (req, res) => {
     const page = await browser.newPage()
     page.setViewport({ width: 1920, height: 1080 })
 
-    // ⭐ DO NOT DECODE SVG
     await page.goto(svgContent, { waitUntil: 'networkidle2' })
 
     const selector = 'svg'
