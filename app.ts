@@ -4,6 +4,8 @@ import { logError, logInfo } from './utils/logger'
 import * as fs from 'fs'
 import axios from 'axios'
 import { axiosRequestConfig } from './configs/request.config'
+import { Buffer } from "buffer";
+import { axiosRequestConfigVeryLong } from './configs/request.config'
 const app = express();
 const port = 3000;
 app.use(express.json({limit: '50mb'}));
@@ -15,7 +17,9 @@ const unknownError = 'Failed due to unknown reason'
 
 const API_END_POINTS = {
   // downloadCert: (certId: string) => `${CONSTANTS.HTTPS_HOST}/api/certreg/v2/certs/download/${certId}`,
-  downloadCert: (certId: string) => `http://cert-registry-service:9000/certs/v2/registry/download/${certId}`
+  downloadCert: (certId: string) => `http://cert-registry-service:9000/certs/v2/registry/download/${certId}`,
+  downloadMilestoneCert: (certId) =>
+    `http://certificate-generator-service:9000/v1/public/milestone/achievement/download/${certId}`
 }
 
 app.get('/', (req, res) => {
@@ -114,6 +118,59 @@ app.get('/public/v8/cert/download/:certId', async(req, res) => {
         error: unknownError,
       }
     )
+  }
+})
+
+app.get('/public/v8/milestone/cert/download/:certId', async (req, res) => {
+  try {
+    const certId = req.params.certId
+    console.log('Milestone cert download - certId:', certId)
+
+    const response = await axios.get(
+      API_END_POINTS.downloadMilestoneCert(certId),
+      { ...axiosRequestConfigVeryLong }
+    )
+
+    const svgContent = response?.data?.result?.printUri
+
+    if (!svgContent) {
+      return res.status(400).send('printUri not received from backend')
+    }
+
+    // ⭐ EXACT SAME LOGIC AS COURSE CERTS ⭐
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox']
+    })
+
+    const page = await browser.newPage()
+    page.setViewport({ width: 1920, height: 1080 })
+
+    // ⭐ DO NOT DECODE SVG
+    await page.goto(svgContent, { waitUntil: 'networkidle2' })
+
+    const selector = 'svg'
+    await page.waitForSelector(selector)
+    const element = await page.$(selector)
+
+    const uuid = uuidv4()
+    const buffer = await element.screenshot({
+      path: `certificates/milestone-${uuid}.png`,
+      printBackground: false
+    })
+
+    res.set({
+      'Content-Type': 'image/png',
+      'Content-Length': buffer.length
+    })
+    res.send(buffer)
+
+    await browser.close()
+    fs.unlink(`certificates/milestone-${uuid}.png`, () => {})
+
+  } catch (err) {
+    logError(err)
+    res.status(500).send('Failed to generate milestone certificate')
   }
 })
 
