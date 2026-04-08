@@ -11,7 +11,7 @@ app.use(express.json({ limit: '5mb' }))
 app.use(express.urlencoded({ limit: '5mb' }))
 
 const unknownError = 'Failed due to unknown reason'
-const MAX_CONCURRENT_RENDERS = Number(process.env.MAX_CONCURRENT_RENDERS) || 5
+const MAX_CONCURRENT_RENDERS = Number(process.env.MAX_CONCURRENT_RENDERS) || 20
 const PAGE_TIMEOUT = Number(process.env.PAGE_TIMEOUT) || 30000
 const QUEUE_TIMEOUT = Number(process.env.QUEUE_TIMEOUT) || 60000
 
