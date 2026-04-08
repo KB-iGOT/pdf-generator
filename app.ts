@@ -39,7 +39,6 @@ const BROWSER_LAUNCH_OPTIONS = {
     '--disable-gpu',
     '--no-first-run',
     '--disable-extensions',
-    '--single-process',
   ]
 }
 
