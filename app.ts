@@ -11,7 +11,9 @@ app.use(express.json({ limit: '50mb' }))
 app.use(express.urlencoded({ limit: '50mb' }))
 
 const unknownError = 'Failed due to unknown reason'
-const MAX_CONCURRENT_RENDERS = Number(process.env.MAX_CONCURRENT_RENDERS) || 20
+const BROWSER_POOL_SIZE = Number(process.env.BROWSER_POOL_SIZE) || 5
+const MAX_PAGES_PER_BROWSER = Number(process.env.MAX_PAGES_PER_BROWSER) || 7
+const MAX_CONCURRENT_RENDERS = BROWSER_POOL_SIZE * MAX_PAGES_PER_BROWSER
 const PAGE_TIMEOUT = Number(process.env.PAGE_TIMEOUT) || 30000
 const QUEUE_TIMEOUT = Number(process.env.QUEUE_TIMEOUT) || 60000
 
@@ -21,32 +23,73 @@ const API_END_POINTS = {
     `http://certificate-generator-service:9000/v1/public/milestone/achievement/download/${certId}`
 }
 
-// --- Browser singleton: reuses one Chromium process for all requests ---
-let browserInstance: any = null
+// --- Browser pool: multiple Chromium processes to avoid single-process bottleneck ---
+const browserPool: Array<{ browser: any; activePages: number }> = []
+let poolReady = false
 
-async function getBrowser() {
-  if (!browserInstance || !browserInstance.isConnected()) {
-    if (browserInstance) {
-      try { await browserInstance.close() } catch (_) { /* already dead */ }
-    }
-    browserInstance = await puppeteer.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-first-run',
-        '--disable-extensions',
-      ]
-    })
-    browserInstance.on('disconnected', () => {
-      logInfo('Browser disconnected, will relaunch on next request')
-      browserInstance = null
-    })
-    logInfo('Browser instance launched')
+const BROWSER_LAUNCH_OPTIONS = {
+  headless: true,
+  handleSIGINT: false,
+  handleSIGTERM: false,
+  handleSIGHUP: false,
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--no-first-run',
+    '--disable-extensions',
+    '--single-process',
+  ]
+}
+
+async function createBrowserEntry(): Promise<{ browser: any; activePages: number }> {
+  const browser = await puppeteer.launch(BROWSER_LAUNCH_OPTIONS)
+  const entry = { browser, activePages: 0 }
+  browser.on('disconnected', () => {
+    logInfo('A browser instance disconnected, removing from pool')
+    const idx = browserPool.indexOf(entry)
+    if (idx !== -1) browserPool.splice(idx, 1)
+  })
+  return entry
+}
+
+async function initBrowserPool() {
+  for (let i = 0; i < BROWSER_POOL_SIZE; i++) {
+    const entry = await createBrowserEntry()
+    browserPool.push(entry)
+    logInfo(`Browser ${i + 1}/${BROWSER_POOL_SIZE} launched`)
   }
-  return browserInstance
+  poolReady = true
+}
+
+async function acquirePage(): Promise<{ page: any; entry: { browser: any; activePages: number } }> {
+  // Ensure pool has enough browsers (replenish if any crashed)
+  while (browserPool.length < BROWSER_POOL_SIZE) {
+    try {
+      const entry = await createBrowserEntry()
+      browserPool.push(entry)
+      logInfo('Replenished crashed browser, pool size:', String(browserPool.length))
+    } catch (err) {
+      logError('Failed to replenish browser:', err)
+      break
+    }
+  }
+  // Pick the browser with the fewest active pages
+  const entry = browserPool.reduce((a, b) => a.activePages <= b.activePages ? a : b)
+  if (entry.activePages >= MAX_PAGES_PER_BROWSER) {
+    throw new Error('All browser slots full')
+  }
+  entry.activePages++
+  const page = await entry.browser.newPage()
+  return { page, entry }
+}
+
+function releasePage(page: any, entry: { browser: any; activePages: number }) {
+  entry.activePages = Math.max(0, entry.activePages - 1)
+  if (page) {
+    try { page.close() } catch (_) {}
+  }
 }
 
 // --- Concurrency limiter: prevents OOM by capping parallel renders ---
@@ -104,23 +147,27 @@ app.post('/public/v8/course/batch/cert/download/mobile', async (req, res) => {
     } else if (req.body.outputFormat === 'pdf') {
       await acquireRenderSlot()
       let page = null
+      let entry = null
       try {
-        const browser = await getBrowser()
-        page = await browser.newPage()
+        const acquired = await acquirePage()
+        page = acquired.page
+        entry = acquired.entry
         await page.goto(svgContent, { waitUntil: 'networkidle2', timeout: PAGE_TIMEOUT })
         const buffer = await page.pdf({ printBackground: true, width: '1204px', height: '662px' })
         res.set({ 'Content-Type': 'application/pdf', 'Content-Length': buffer.length })
         res.send(buffer)
       } finally {
-        if (page) try { await page.close() } catch (_) {}
+        releasePage(page, entry)
         releaseRenderSlot()
       }
     } else if (req.body.outputFormat === 'png') {
       await acquireRenderSlot()
       let page = null
+      let entry = null
       try {
-        const browser = await getBrowser()
-        page = await browser.newPage()
+        const acquired = await acquirePage()
+        page = acquired.page
+        entry = acquired.entry
         await page.goto(svgContent, { waitUntil: 'networkidle2', timeout: PAGE_TIMEOUT })
         const selector = 'svg'
         await page.waitForSelector(selector, { timeout: PAGE_TIMEOUT })
@@ -129,7 +176,7 @@ app.post('/public/v8/course/batch/cert/download/mobile', async (req, res) => {
         res.set({ 'Content-Type': 'image/png', 'Content-Length': buffer.length })
         res.send(buffer)
       } finally {
-        if (page) try { await page.close() } catch (_) {}
+        releasePage(page, entry)
         releaseRenderSlot()
       }
     }
@@ -156,9 +203,11 @@ app.get('/public/v8/cert/download/:certId', async (req, res) => {
       const svgContent = response.data.result.printUri
       await acquireRenderSlot()
       let page = null
+      let entry = null
       try {
-        const browser = await getBrowser()
-        page = await browser.newPage()
+        const acquired = await acquirePage()
+        page = acquired.page
+        entry = acquired.entry
         await page.setViewport({ width: 1920, height: 1080 })
         await page.goto(svgContent, { waitUntil: 'networkidle2', timeout: PAGE_TIMEOUT })
         const selector = 'svg'
@@ -168,7 +217,7 @@ app.get('/public/v8/cert/download/:certId', async (req, res) => {
         res.set({ 'Content-Type': 'image/png', 'Content-Length': buffer.length })
         res.send(buffer)
       } finally {
-        if (page) try { await page.close() } catch (_) {}
+        releasePage(page, entry)
         releaseRenderSlot()
       }
     } else {
@@ -205,9 +254,11 @@ app.get('/public/v8/milestone/cert/download/:certId', async (req, res) => {
 
     await acquireRenderSlot()
     let page = null
+    let entry = null
     try {
-      const browser = await getBrowser()
-      page = await browser.newPage()
+      const acquired = await acquirePage()
+      page = acquired.page
+      entry = acquired.entry
       await page.setViewport({ width: 1920, height: 1080 })
       await page.goto(svgContent, { waitUntil: 'networkidle2', timeout: PAGE_TIMEOUT })
       const selector = 'svg'
@@ -217,7 +268,7 @@ app.get('/public/v8/milestone/cert/download/:certId', async (req, res) => {
       res.set({ 'Content-Type': 'image/png', 'Content-Length': buffer.length })
       res.send(buffer)
     } finally {
-      if (page) try { await page.close() } catch (_) {}
+      releasePage(page, entry)
       releaseRenderSlot()
     }
   } catch (err) {
@@ -229,19 +280,20 @@ app.get('/public/v8/milestone/cert/download/:certId', async (req, res) => {
   }
 })
 
-// Pre-launch browser at startup
-getBrowser().then(() => {
-  logInfo('Browser pre-launched successfully')
+// Pre-launch browser pool at startup
+initBrowserPool().then(() => {
+  logInfo(`Browser pool ready: ${BROWSER_POOL_SIZE} browsers, ${MAX_PAGES_PER_BROWSER} pages each, ${MAX_CONCURRENT_RENDERS} total capacity`)
 }).catch((err) => {
-  logError('Failed to pre-launch browser:', err)
+  logError('Failed to init browser pool:', err)
 })
 
 // Graceful shutdown
 async function shutdown() {
   logInfo('Shutting down...')
-  if (browserInstance) {
-    try { await browserInstance.close() } catch (_) {}
+  for (const entry of browserPool) {
+    try { await entry.browser.close() } catch (_) {}
   }
+  browserPool.length = 0
   process.exit(0)
 }
 process.on('SIGTERM', shutdown)
