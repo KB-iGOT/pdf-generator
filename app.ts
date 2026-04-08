@@ -7,8 +7,8 @@ const puppeteer = require('puppeteer')
 
 const app = express()
 const port = 3000
-app.use(express.json({ limit: '5mb' }))
-app.use(express.urlencoded({ limit: '5mb' }))
+app.use(express.json({ limit: '50mb' }))
+app.use(express.urlencoded({ limit: '50mb' }))
 
 const unknownError = 'Failed due to unknown reason'
 const MAX_CONCURRENT_RENDERS = Number(process.env.MAX_CONCURRENT_RENDERS) || 20
