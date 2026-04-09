@@ -25,7 +25,8 @@ const API_END_POINTS = {
 
 // --- Browser pool ---
 const browserPool: Array<{ browser: any; activePages: number; totalPagesServed: number }> = []
-const MAX_PAGES_BEFORE_RECYCLE = Number(process.env.MAX_PAGES_BEFORE_RECYCLE) || 500
+const MAX_PAGES_BEFORE_RECYCLE = Number(process.env.MAX_PAGES_BEFORE_RECYCLE) || 200
+const RECYCLE_CHECK_INTERVAL = 60000 // check every 60 seconds
 
 async function createBrowserEntry(): Promise<{ browser: any; activePages: number; totalPagesServed: number }> {
   const browser = await puppeteer.launch({
@@ -59,6 +60,29 @@ async function initBrowserPool() {
   }
 }
 
+// Periodic recycling: recycles idle browsers that have served pages, even when no traffic
+async function recycleIdleBrowsers() {
+  for (let i = browserPool.length - 1; i >= 0; i--) {
+    const entry = browserPool[i]
+    if (entry.activePages === 0 && entry.totalPagesServed >= MAX_PAGES_BEFORE_RECYCLE) {
+      logInfo(`Recycling idle browser after ${entry.totalPagesServed} pages served`)
+      browserPool.splice(i, 1)
+      try { await entry.browser.close() } catch (_) {}
+      try {
+        const newEntry = await createBrowserEntry()
+        browserPool.push(newEntry)
+        logInfo('Replacement browser launched, pool size:', String(browserPool.length))
+      } catch (err) {
+        logError('Failed to create replacement browser:', err)
+      }
+    }
+  }
+}
+
+setInterval(() => {
+  recycleIdleBrowsers().catch(err => logError('Recycle check failed:', err))
+}, RECYCLE_CHECK_INTERVAL)
+
 async function acquirePage(): Promise<{ page: any; entry: { browser: any; activePages: number; totalPagesServed: number } }> {
   while (browserPool.length < BROWSER_POOL_SIZE) {
     try {
@@ -86,7 +110,7 @@ async function releasePage(page: any, entry: { browser: any; activePages: number
   }
   entry.activePages = Math.max(0, entry.activePages - 1)
 
-  // Recycle browser after serving too many pages to prevent memory fragmentation
+  // Recycle browser inline if threshold reached and no active pages
   if (entry.totalPagesServed >= MAX_PAGES_BEFORE_RECYCLE && entry.activePages === 0) {
     logInfo(`Recycling browser after ${entry.totalPagesServed} pages served`)
     const idx = browserPool.indexOf(entry)
