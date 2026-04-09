@@ -11,8 +11,8 @@ app.use(express.json({ limit: '50mb' }))
 app.use(express.urlencoded({ limit: '50mb' }))
 
 const unknownError = 'Failed due to unknown reason'
-const BROWSER_POOL_SIZE = Number(process.env.BROWSER_POOL_SIZE) || 2
-const MAX_PAGES_PER_BROWSER = Number(process.env.MAX_PAGES_PER_BROWSER) || 10
+const BROWSER_POOL_SIZE = Number(process.env.BROWSER_POOL_SIZE) || 10
+const MAX_PAGES_PER_BROWSER = Number(process.env.MAX_PAGES_PER_BROWSER) || 3
 const MAX_CONCURRENT_RENDERS = BROWSER_POOL_SIZE * MAX_PAGES_PER_BROWSER
 const PAGE_TIMEOUT = Number(process.env.PAGE_TIMEOUT) || 30000
 const QUEUE_TIMEOUT = Number(process.env.QUEUE_TIMEOUT) || 60000
