@@ -12,7 +12,7 @@ app.use(express.urlencoded({ limit: '50mb' }))
 
 const unknownError = 'Failed due to unknown reason'
 const BROWSER_POOL_SIZE = Number(process.env.BROWSER_POOL_SIZE) || 10
-const MAX_PAGES_PER_BROWSER = Number(process.env.MAX_PAGES_PER_BROWSER) || 2
+const MAX_PAGES_PER_BROWSER = Number(process.env.MAX_PAGES_PER_BROWSER) || 3
 const MAX_CONCURRENT_RENDERS = BROWSER_POOL_SIZE * MAX_PAGES_PER_BROWSER
 const PAGE_TIMEOUT = Number(process.env.PAGE_TIMEOUT) || 30000
 const QUEUE_TIMEOUT = Number(process.env.QUEUE_TIMEOUT) || 60000
@@ -23,30 +23,28 @@ const API_END_POINTS = {
     `http://certificate-generator-service:9000/v1/public/milestone/achievement/download/${certId}`
 }
 
-// --- Browser pool: multiple Chromium processes to avoid single-process bottleneck ---
-const browserPool: Array<{ browser: any; activePages: number }> = []
-let poolReady = false
+// --- Browser pool ---
+const browserPool: Array<{ browser: any; activePages: number; totalPagesServed: number }> = []
+const MAX_PAGES_BEFORE_RECYCLE = Number(process.env.MAX_PAGES_BEFORE_RECYCLE) || 500
 
-const BROWSER_LAUNCH_OPTIONS = {
-  headless: true,
-  handleSIGINT: false,
-  handleSIGTERM: false,
-  handleSIGHUP: false,
-  args: [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-gpu',
-    '--no-first-run',
-    '--disable-extensions',
-  ]
-}
-
-async function createBrowserEntry(): Promise<{ browser: any; activePages: number }> {
-  const browser = await puppeteer.launch(BROWSER_LAUNCH_OPTIONS)
-  const entry = { browser, activePages: 0 }
+async function createBrowserEntry(): Promise<{ browser: any; activePages: number; totalPagesServed: number }> {
+  const browser = await puppeteer.launch({
+    headless: true,
+    handleSIGINT: false,
+    handleSIGTERM: false,
+    handleSIGHUP: false,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-first-run',
+      '--disable-extensions',
+    ]
+  })
+  const entry = { browser, activePages: 0, totalPagesServed: 0 }
   browser.on('disconnected', () => {
-    logInfo('A browser instance disconnected, removing from pool')
+    logInfo('Browser disconnected, removing from pool')
     const idx = browserPool.indexOf(entry)
     if (idx !== -1) browserPool.splice(idx, 1)
   })
@@ -59,39 +57,52 @@ async function initBrowserPool() {
     browserPool.push(entry)
     logInfo(`Browser ${i + 1}/${BROWSER_POOL_SIZE} launched`)
   }
-  poolReady = true
 }
 
-async function acquirePage(): Promise<{ page: any; entry: { browser: any; activePages: number } }> {
-  // Ensure pool has enough browsers (replenish if any crashed)
+async function acquirePage(): Promise<{ page: any; entry: { browser: any; activePages: number; totalPagesServed: number } }> {
   while (browserPool.length < BROWSER_POOL_SIZE) {
     try {
       const entry = await createBrowserEntry()
       browserPool.push(entry)
-      logInfo('Replenished crashed browser, pool size:', String(browserPool.length))
+      logInfo('Replenished browser, pool size:', String(browserPool.length))
     } catch (err) {
       logError('Failed to replenish browser:', err)
       break
     }
   }
-  // Pick the browser with the fewest active pages
   const entry = browserPool.reduce((a, b) => a.activePages <= b.activePages ? a : b)
   if (entry.activePages >= MAX_PAGES_PER_BROWSER) {
     throw new Error('All browser slots full')
   }
   entry.activePages++
+  entry.totalPagesServed++
   const page = await entry.browser.newPage()
   return { page, entry }
 }
 
-function releasePage(page: any, entry: { browser: any; activePages: number }) {
-  entry.activePages = Math.max(0, entry.activePages - 1)
+async function releasePage(page: any, entry: { browser: any; activePages: number; totalPagesServed: number }) {
   if (page) {
-    try { page.close() } catch (_) {}
+    try { await page.close() } catch (_) {}
+  }
+  entry.activePages = Math.max(0, entry.activePages - 1)
+
+  // Recycle browser after serving too many pages to prevent memory fragmentation
+  if (entry.totalPagesServed >= MAX_PAGES_BEFORE_RECYCLE && entry.activePages === 0) {
+    logInfo(`Recycling browser after ${entry.totalPagesServed} pages served`)
+    const idx = browserPool.indexOf(entry)
+    if (idx !== -1) browserPool.splice(idx, 1)
+    try { await entry.browser.close() } catch (_) {}
+    try {
+      const newEntry = await createBrowserEntry()
+      browserPool.push(newEntry)
+      logInfo('Replacement browser launched, pool size:', String(browserPool.length))
+    } catch (err) {
+      logError('Failed to create replacement browser:', err)
+    }
   }
 }
 
-// --- Concurrency limiter: prevents OOM by capping parallel renders ---
+// --- Concurrency limiter ---
 let activeRenders = 0
 const waitQueue: Array<{ resolve: () => void; timer: ReturnType<typeof setTimeout> }> = []
 
@@ -156,7 +167,7 @@ app.post('/public/v8/course/batch/cert/download/mobile', async (req, res) => {
         res.set({ 'Content-Type': 'application/pdf', 'Content-Length': buffer.length })
         res.send(buffer)
       } finally {
-        releasePage(page, entry)
+        await releasePage(page, entry)
         releaseRenderSlot()
       }
     } else if (req.body.outputFormat === 'png') {
@@ -175,7 +186,7 @@ app.post('/public/v8/course/batch/cert/download/mobile', async (req, res) => {
         res.set({ 'Content-Type': 'image/png', 'Content-Length': buffer.length })
         res.send(buffer)
       } finally {
-        releasePage(page, entry)
+        await releasePage(page, entry)
         releaseRenderSlot()
       }
     }
@@ -216,7 +227,7 @@ app.get('/public/v8/cert/download/:certId', async (req, res) => {
         res.set({ 'Content-Type': 'image/png', 'Content-Length': buffer.length })
         res.send(buffer)
       } finally {
-        releasePage(page, entry)
+        await releasePage(page, entry)
         releaseRenderSlot()
       }
     } else {
@@ -267,7 +278,7 @@ app.get('/public/v8/milestone/cert/download/:certId', async (req, res) => {
       res.set({ 'Content-Type': 'image/png', 'Content-Length': buffer.length })
       res.send(buffer)
     } finally {
-      releasePage(page, entry)
+      await releasePage(page, entry)
       releaseRenderSlot()
     }
   } catch (err) {
