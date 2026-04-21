@@ -8,6 +8,7 @@
 /.sonarlint
 # dependencies
 /node_modules
+/coverage
 
 
 # IDE - VSCode
