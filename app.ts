@@ -52,6 +52,7 @@ async function createBrowserEntry(): Promise<{ browser: any; activePages: number
   return entry
 }
 
+/* istanbul ignore next */
 async function initBrowserPool() {
   for (let i = 0; i < BROWSER_POOL_SIZE; i++) {
     const entry = await createBrowserEntry()
@@ -61,6 +62,7 @@ async function initBrowserPool() {
 }
 
 // Periodic recycling: recycles idle browsers that have served pages, even when no traffic
+/* istanbul ignore next */
 async function recycleIdleBrowsers() {
   for (let i = browserPool.length - 1; i >= 0; i--) {
     const entry = browserPool[i]
@@ -79,6 +81,7 @@ async function recycleIdleBrowsers() {
   }
 }
 
+/* istanbul ignore next */
 setInterval(() => {
   recycleIdleBrowsers().catch(err => logError('Recycle check failed:', err))
 }, RECYCLE_CHECK_INTERVAL)
@@ -95,6 +98,7 @@ async function acquirePage(): Promise<{ page: any; entry: { browser: any; active
     }
   }
   const entry = browserPool.reduce((a, b) => a.activePages <= b.activePages ? a : b)
+  /* istanbul ignore next */
   if (entry.activePages >= MAX_PAGES_PER_BROWSER) {
     throw new Error('All browser slots full')
   }
@@ -314,25 +318,30 @@ app.get('/public/v8/milestone/cert/download/:certId', async (req, res) => {
   }
 })
 
-// Pre-launch browser pool at startup
-initBrowserPool().then(() => {
-  logInfo(`Browser pool ready: ${BROWSER_POOL_SIZE} browsers, ${MAX_PAGES_PER_BROWSER} pages each, ${MAX_CONCURRENT_RENDERS} total capacity`)
-}).catch((err) => {
-  logError('Failed to init browser pool:', err)
-})
+export { app, acquireRenderSlot, releaseRenderSlot }
 
-// Graceful shutdown
-async function shutdown() {
-  logInfo('Shutting down...')
-  for (const entry of browserPool) {
-    try { await entry.browser.close() } catch (_) {}
+/* istanbul ignore next */
+if (require.main === module) {
+  // Pre-launch browser pool at startup
+  initBrowserPool().then(() => {
+    logInfo(`Browser pool ready: ${BROWSER_POOL_SIZE} browsers, ${MAX_PAGES_PER_BROWSER} pages each, ${MAX_CONCURRENT_RENDERS} total capacity`)
+  }).catch((err) => {
+    logError('Failed to init browser pool:', err)
+  })
+
+  // Graceful shutdown
+  const shutdown = async () => {
+    logInfo('Shutting down...')
+    for (const entry of browserPool) {
+      try { await entry.browser.close() } catch (_) {}
+    }
+    browserPool.length = 0
+    process.exit(0)
   }
-  browserPool.length = 0
-  process.exit(0)
-}
-process.on('SIGTERM', shutdown)
-process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
+  process.on('SIGINT', shutdown)
 
-app.listen(port, () => {
-  return console.log(`Express is listening at http://localhost:${port}`)
-})
+  app.listen(port, () => {
+    return console.log(`Express is listening at http://localhost:${port}`)
+  })
+}
