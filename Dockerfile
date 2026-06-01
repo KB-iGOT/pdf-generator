@@ -1,5 +1,9 @@
 FROM node:16
 
+# Create app user and group
+RUN groupadd -g 1001 appgroup \
+    && useradd -u 1001 -g appgroup -m appuser
+    
 WORKDIR /usr/src/app
 
 # Switch old repos to archive repos
@@ -23,15 +27,16 @@ RUN apt-get update && apt-get install -y fonts-noto-core fontconfig wget && mkdi
 # Verify fonts are installed
 RUN fc-list | grep -i kannada
 
-RUN mkdir -p /usr/src/app/user_upload
-RUN mkdir -p /usr/src/app/logs
+RUN mkdir -p /usr/src/app/user_upload \
+    && mkdir -p /usr/src/app/logs \
+    && chown -R appuser:appgroup /usr/src/app
 
 COPY package*.json ./
 RUN npm install --only=production
 RUN npm install -g typescript@5.2.2
 COPY . .
+RUN chown -R appuser:appgroup /usr/src/app
 RUN npm run build
 EXPOSE 3000
-
+USER appuser
 CMD [ "node", "dist/app.js" ]
-
