@@ -28,11 +28,11 @@ RUN mkdir -p /usr/src/app/user_upload \
 
 COPY package*.json ./
 ENV PUPPETEER_CACHE_DIR=/usr/src/app/.cache/puppeteer
-RUN npm install --omit=dev
+RUN npm install
 RUN npm install -g typescript@5.2.2
 COPY . .
 RUN chown -R appuser:appgroup /usr/src/app
-RUN npm run build
+RUN npm run build && npm prune --omit=dev
 EXPOSE 3000
 USER appuser
 CMD [ "node", "dist/app.js" ]
