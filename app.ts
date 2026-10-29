@@ -187,7 +187,7 @@ app.post('/public/v8/course/batch/cert/download/mobile', async (req, res) => {
         page = acquired.page
         entry = acquired.entry
         await page.goto(svgContent, { waitUntil: 'networkidle2', timeout: PAGE_TIMEOUT })
-        const buffer = await page.pdf({ printBackground: true, width: '1204px', height: '662px' })
+        const buffer = Buffer.from(await page.pdf({ printBackground: true, width: '1204px', height: '662px' }))
         res.set({ 'Content-Type': 'application/pdf', 'Content-Length': buffer.length })
         res.send(buffer)
       } finally {
