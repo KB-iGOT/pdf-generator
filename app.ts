@@ -16,9 +16,14 @@ const MAX_PAGES_PER_BROWSER = Number(process.env.MAX_PAGES_PER_BROWSER) || 3
 const MAX_CONCURRENT_RENDERS = BROWSER_POOL_SIZE * MAX_PAGES_PER_BROWSER
 const PAGE_TIMEOUT = Number(process.env.PAGE_TIMEOUT) || 30000
 const QUEUE_TIMEOUT = Number(process.env.QUEUE_TIMEOUT) || 60000
+// V2 only: reserve five seconds for cleanup below the 60s Kong / 70s ingress defaults.
+const V2_REQUEST_TIMEOUT = 55000
+const V2_CLEANUP_TIMEOUT = 5000
 
 const API_END_POINTS = {
   downloadCert: (certId: string) => `http://cert-registry-service:9000/certs/v2/registry/download/${certId}`,
+  downloadV2Cert: (certId: string) =>
+    `http://certificate-generator-service:9000/v1/certs/legacy/generate/${encodeURIComponent(certId)}`,
   downloadMilestoneCert: (certId) =>
     `http://certificate-generator-service:9000/v1/public/milestone/achievement/download/${certId}`
 }
@@ -83,28 +88,64 @@ setInterval(() => {
   recycleIdleBrowsers().catch(err => logError('Recycle check failed:', err))
 }, RECYCLE_CHECK_INTERVAL)
 
-async function acquirePage(): Promise<{ page: any; entry: { browser: any; activePages: number; totalPagesServed: number } }> {
+// Stop awaiting on cancellation, while still observing late promise rejections.
+function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const aborted = () => reject(signal.reason)
+    signal.addEventListener('abort', aborted, { once: true })
+    if (signal.aborted) aborted()
+    operation.then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted))
+  })
+}
+
+async function acquirePage(signal?: AbortSignal): Promise<{ page: any; entry: { browser: any; activePages: number; totalPagesServed: number } }> {
+  signal?.throwIfAborted()
   while (browserPool.length < BROWSER_POOL_SIZE) {
+    const creation = createBrowserEntry()
     try {
-      const entry = await createBrowserEntry()
+      const entry = signal ? await abortable(creation, signal) : await creation
+      signal?.throwIfAborted()
       browserPool.push(entry)
       logInfo('Replenished browser, pool size:', String(browserPool.length))
     } catch (err) {
+      if (signal?.aborted) {
+        // A launch finishing after cancellation must not enter the shared pool.
+        void creation.then(entry => entry.browser.close()).catch(logError)
+        throw signal.reason
+      }
       logError('Failed to replenish browser:', err)
       break
     }
   }
+  signal?.throwIfAborted()
   const entry = browserPool.reduce((a, b) => a.activePages <= b.activePages ? a : b)
   if (entry.activePages >= MAX_PAGES_PER_BROWSER) {
     throw new Error('All browser slots full')
   }
   entry.activePages++
   entry.totalPagesServed++
-  const page = await entry.browser.newPage()
-  return { page, entry }
+  let pending: Promise<any>
+  try {
+    pending = entry.browser.newPage()
+    const page = signal ? await abortable(pending, signal) : await pending
+    signal?.throwIfAborted()
+    return { page, entry }
+  } catch (err) {
+    if (signal?.aborted && pending) {
+      // Retain capacity until a late page is closed; never hand it to the caller.
+      void pending.then(page => releasePage(page, entry), () => {
+        entry.activePages = Math.max(0, entry.activePages - 1)
+      }).catch(logError)
+    } else {
+      // A failed acquisition never reaches the caller's page cleanup.
+      entry.activePages = Math.max(0, entry.activePages - 1)
+    }
+    throw err
+  }
 }
 
 async function releasePage(page: any, entry: { browser: any; activePages: number; totalPagesServed: number }) {
+  if (!entry) return
   if (page) {
     try { await page.close() } catch (_) {}
   }
@@ -130,19 +171,30 @@ async function releasePage(page: any, entry: { browser: any; activePages: number
 let activeRenders = 0
 const waitQueue: Array<{ resolve: () => void; timer: ReturnType<typeof setTimeout> }> = []
 
-function acquireRenderSlot(): Promise<void> {
+function acquireRenderSlot(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason)
   if (activeRenders < MAX_CONCURRENT_RENDERS) {
     activeRenders++
     return Promise.resolve()
   }
   return new Promise<void>((resolve, reject) => {
-    const entry: { resolve: () => void; timer: ReturnType<typeof setTimeout> } = { resolve, timer: null as any }
-    entry.timer = setTimeout(() => {
+    const cleanup = () => {
+      clearTimeout(entry.timer)
+      signal?.removeEventListener('abort', aborted)
+    }
+    const remove = () => {
       const idx = waitQueue.indexOf(entry)
       if (idx !== -1) waitQueue.splice(idx, 1)
+      cleanup()
+    }
+    const aborted = () => { remove(); reject(signal.reason) }
+    const entry = { resolve: () => { cleanup(); resolve() }, timer: null as ReturnType<typeof setTimeout> }
+    entry.timer = setTimeout(() => {
+      remove()
       reject(new Error('Render queue timeout - service is overloaded'))
     }, QUEUE_TIMEOUT)
     waitQueue.push(entry)
+    signal?.addEventListener('abort', aborted, { once: true })
   })
 }
 
@@ -267,6 +319,98 @@ app.get('/public/v8/cert/download/:certId', async (req, res) => {
         error: unknownError,
       }
     )
+  }
+})
+
+app.get('/public/v2/cert/download/:certId', async (req, res) => {
+  const work = new AbortController()
+  const cleanup = new AbortController()
+  const timeoutError = Object.assign(new Error('Certificate PNG request timed out'), { code: 'V2_TIMEOUT' })
+  const workDeadline = Date.now() + V2_REQUEST_TIMEOUT - V2_CLEANUP_TIMEOUT
+  const workTimer = setTimeout(() => work.abort(timeoutError), V2_REQUEST_TIMEOUT - V2_CLEANUP_TIMEOUT)
+  const cleanupTimer = setTimeout(() => cleanup.abort(timeoutError), V2_REQUEST_TIMEOUT)
+  const run = <T>(operation: () => Promise<T>) => {
+    work.signal.throwIfAborted()
+    return abortable(operation(), work.signal)
+  }
+  const pageTimeout = () => Math.min(PAGE_TIMEOUT, Math.max(1, workDeadline - Date.now()))
+  let page = null
+  let session = null
+  let targetId: string
+  let closing: Promise<void>
+  const closePage = () => closing || (closing = Promise.resolve().then(() => page.close()))
+  const cancelPage = () => {
+    if (!page) return
+    // page.close() waits behind screenshots. Close only this target via CDP to
+    // interrupt a stuck screenshot without terminating its shared browser.
+    const connection = session?.connection()
+    if (connection && targetId) {
+      void Promise.resolve().then(() => connection.send('Target.closeTarget', { targetId }, { timeout: 1000 })).catch(logError)
+    } else {
+      void closePage().catch(logError)
+    }
+  }
+  work.signal.addEventListener('abort', cancelPage, { once: true })
+  try {
+    const response = await run(() => axios.get(API_END_POINTS.downloadV2Cert(req.params.certId),
+      { ...axiosRequestConfig, timeout: 20000, signal: work.signal, maxRedirects: 0 }))
+    const printUri = response?.data?.result?.printUri
+
+    if (typeof printUri !== 'string' || !printUri.trim()) {
+      return res.status(502).send({ error: 'printUri not received from backend' })
+    }
+
+    // Await directly: a resolved queue transfer already owns the slot, even if
+    // cancellation occurs before the continuation gets to run.
+    await acquireRenderSlot(work.signal)
+    let entry = null
+    let buffer: Buffer
+    try {
+      work.signal.throwIfAborted()
+      const acquired = await acquirePage(work.signal)
+      page = acquired.page
+      entry = acquired.entry
+      session = await run(() => page.createCDPSession())
+      const info: any = await run(() => session.send('Target.getTargetInfo', {}, { timeout: pageTimeout() }))
+      targetId = info.targetInfo.targetId
+      await run(() => page.setViewport({ width: 1920, height: 1080 }))
+      await run(() => page.goto(printUri, { waitUntil: 'networkidle2', timeout: pageTimeout() }))
+      await run(() => page.waitForSelector('svg', { timeout: pageTimeout(), signal: work.signal }))
+      const element: any = await run(() => page.$('svg'))
+      if (!element) {
+        throw new Error('SVG element not found')
+      }
+      buffer = Buffer.from(await run(() => element.screenshot({ type: 'png' })))
+    } finally {
+      try {
+        if (entry) {
+          // Keep the reservation until actual page closure; a cleanup deadline
+          // bounds the response, not permission to reuse an unclosed page.
+          await abortable(releasePage({ close: closePage }, entry), cleanup.signal)
+        }
+      } finally {
+        releaseRenderSlot()
+      }
+    }
+    work.signal.throwIfAborted()
+    cleanup.signal.throwIfAborted()
+    res.set({ 'Content-Type': 'image/png', 'Content-Length': buffer.length })
+    res.status(200).send(buffer)
+  } catch (err) {
+    logError(err)
+    if (err === timeoutError) {
+      return res.status(504).send({ error: timeoutError.message })
+    }
+    if (err.message && (err.message.includes('queue timeout') || err.message === 'All browser slots full')) {
+      return res.status(503).send({ error: 'Service is overloaded, please retry later' })
+    }
+    res.status((err && err.response && err.response.status) || 500).send(
+      (err && err.response && err.response.data) ?? { error: unknownError }
+    )
+  } finally {
+    clearTimeout(workTimer)
+    clearTimeout(cleanupTimer)
+    work.signal.removeEventListener('abort', cancelPage)
   }
 })
 
